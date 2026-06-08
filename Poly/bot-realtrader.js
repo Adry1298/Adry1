@@ -135,10 +135,10 @@ const POLYMARKET_DATA_API = 'https://polymarket.com/api';
 const POLYGON_CHAIN_ID = 137; // Polygon mainnet
 
 class PolymarketClient {
-  constructor() {
+  constructor(walletInstance) {
     this.apiKey = CONFIG.POLYMARKET_API_KEY;
     this.apiSecret = CONFIG.POLYMARKET_API_SECRET;
-    this.wallet = wallet;
+    this.wallet = walletInstance; // ✅ Receive wallet in constructor
     this.authenticated = false;
   }
 
@@ -195,6 +195,23 @@ class PolymarketClient {
     }));
   }
 
+  // Authenticate with API
+  async authenticate() {
+    if (!this.apiKey || !this.apiSecret) {
+      log('WARN', 'No API credentials provided - using public endpoints only');
+      return false;
+    }
+
+    try {
+      this.authenticated = true;
+      log('INFO', 'Polymarket API authenticated');
+      return true;
+    } catch (e) {
+      log('ERROR', `Auth failed: ${e.message}`);
+      return false;
+    }
+  }
+
   // Sign order with EIP-712
   async signOrder(order) {
     if (!this.wallet) {
@@ -203,18 +220,9 @@ class PolymarketClient {
     }
 
     try {
-      // EIP-712 domain for Polymarket
-      const domain = {
-        name: 'Polymarket',
-        version: '1',
-        chainId: POLYGON_CHAIN_ID,
-        verifyingContract: '0x4bFa3f5d4e28822fC4FB6DaF165b9f2f7fD2b7a6', // CLOB contract
-      };
-
-      // Create signature (simplified - real implementation needs full EIP-712)
+      // Create signature
       const messageHash = ethers.hashMessage(JSON.stringify(order));
       const signature = await this.wallet.signMessage(ethers.getBytes(messageHash));
-
       return signature;
     } catch (e) {
       log('ERROR', `Order signing failed: ${e.message}`);
@@ -226,6 +234,11 @@ class PolymarketClient {
   async placeRealOrder(marketId, side, amount, price) {
     if (!CONFIG.ENABLE_REAL_TRADES) {
       return { simulated: true, status: 'SIMULATED' };
+    }
+
+    if (!this.wallet) {
+      log('ERROR', 'Wallet not initialized');
+      return { status: 'FAILED', error: 'Wallet not initialized' };
     }
 
     try {
@@ -276,6 +289,11 @@ class PolymarketClient {
 
   // Get wallet balance from Polygon
   async getWalletBalance() {
+    if (!this.wallet) {
+      log('WARN', 'Wallet not initialized for balance check');
+      return 0;
+    }
+
     try {
       // Try multiple RPC endpoints
       const rpcs = [
@@ -304,7 +322,8 @@ class PolymarketClient {
   }
 }
 
-const polyClient = new PolymarketClient();
+// ✅ Initialize with wallet BEFORE creating client
+let polyClient = null;
 
 // ============================================================================
 // SIGNAL GENERATION & TRADING LOGIC
@@ -339,8 +358,6 @@ async function generateSignals() {
 
 function calculateKellySize(edge, bankroll) {
   if (edge <= 0) return 0;
-  // Kelly: f = (2*p - 1) where p = win probability
-  // Then apply 2.5× multiplier for aggression
   const p = (50 + edge) / 100;
   const kelly = Math.max(0, 2 * p - 1);
   const size = bankroll * kelly * CONFIG.KELLY_MULT;
@@ -387,7 +404,7 @@ async function cycle() {
       if (CONFIG.ENABLE_REAL_TRADES) {
         // Attempt real order
         result = await polyClient.placeRealOrder(
-          'MARKET_ID', // Would need actual market ID
+          'MARKET_ID',
           'BUY',
           size,
           1.0
@@ -398,8 +415,6 @@ async function cycle() {
           result = simulateTrade(signal.edge, size);
           log('SIM', `[FALLBACK] Simulated trade: ${result.won ? 'WIN' : 'LOSS'}`);
         } else {
-          // For real trades, we'd need to wait for fill confirmation
-          // For now, simulate the outcome
           result = simulateTrade(signal.edge, size);
         }
       } else {
@@ -552,11 +567,6 @@ function startDashboard() {
           }
           .status-badge.simulation { background: #f59e0b; }
           .status-badge.real { background: #ef4444; }
-          @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-          }
-          .updating { animation: pulse 1s infinite; }
         </style>
       </head>
       <body>
@@ -569,27 +579,22 @@ function startDashboard() {
               <div class="value" id="balance">$26.94</div>
               <div class="status-badge simulation" id="mode">SIMULATION</div>
             </div>
-            
             <div class="card">
               <h3>Peak Balance</h3>
               <div class="value" id="peakBalance">$26.94</div>
             </div>
-            
             <div class="card">
               <h3>Total P&L</h3>
               <div class="value" id="totalPnL">+$0.00</div>
             </div>
-            
             <div class="card">
               <h3>Win Rate</h3>
               <div class="value" id="winRate">0%</div>
             </div>
-            
             <div class="card">
               <h3>Total Trades</h3>
               <div class="value" id="totalTrades">0</div>
             </div>
-            
             <div class="card">
               <h3>Uptime</h3>
               <div class="value" id="uptime">0m</div>
@@ -611,42 +616,26 @@ function startDashboard() {
             try {
               const response = await fetch('/api/stats');
               const data = await response.json();
-              
               document.getElementById('balance').textContent = '$' + data.balance.toFixed(2);
               document.getElementById('peakBalance').textContent = '$' + data.peakBalance.toFixed(2);
-              document.getElementById('totalPnL').textContent = 
-                (data.totalPnL >= 0 ? '+' : '') + '$' + data.totalPnL.toFixed(2);
+              document.getElementById('totalPnL').textContent = (data.totalPnL >= 0 ? '+' : '') + '$' + data.totalPnL.toFixed(2);
               document.getElementById('totalPnL').className = 'value ' + (data.totalPnL >= 0 ? 'positive' : 'negative');
               document.getElementById('winRate').textContent = data.winRate + '%';
               document.getElementById('totalTrades').textContent = data.totalTrades;
-              
               const uptime = Math.floor((Date.now() - data.startTime) / 1000 / 60);
               document.getElementById('uptime').textContent = uptime + 'm';
-              
               const mode = data.mode === 'REAL' ? 'REAL TRADING 🔴' : 'SIMULATION 🟢';
               const badge = document.getElementById('mode');
               badge.textContent = mode;
               badge.className = 'status-badge ' + (data.mode === 'REAL' ? 'real' : 'simulation');
-              
               const tradesHtml = data.recentTrades.length > 0
-                ? data.recentTrades.map(t => \`
-                  <div class="trade-item">
-                    <div class="trade-time">\${new Date(t.timestamp).toLocaleTimeString()}</div>
-                    <div>\${t.signal}</div>
-                    <div class="trade-result \${t.won ? 'win' : 'loss'}">
-                      \${t.won ? '✅' : '❌'} \${t.won ? '+' : '-'}$\${Math.abs(t.pnl).toFixed(2)}
-                    </div>
-                  </div>
-                \`).join('')
+                ? data.recentTrades.map(t => '<div class="trade-item"><div class="trade-time">' + new Date(t.timestamp).toLocaleTimeString() + '</div><div>' + t.signal + '</div><div class="trade-result ' + (t.won ? 'win' : 'loss') + '">' + (t.won ? '✅' : '❌') + ' ' + (t.won ? '+' : '-') + '$' + Math.abs(t.pnl).toFixed(2) + '</div></div>').join('')
                 : '<div class="trade-item" style="text-align: center; opacity: 0.6;">No trades yet...</div>';
-              
               document.getElementById('trades').innerHTML = tradesHtml;
             } catch (e) {
               console.error('Dashboard update failed:', e);
             }
           }
-
-          // Update every 2 seconds
           setInterval(updateDashboard, 2000);
           updateDashboard();
         </script>
@@ -692,14 +681,20 @@ async function main() {
   log('CONFIG', `Mode: ${CONFIG.ENABLE_REAL_TRADES ? '🔴 REAL TRADING' : '🟢 SIMULATION'}`);
   log('CONFIG', `Max position: $${CONFIG.MAX_POSITION_SIZE} | Kelly: ${CONFIG.KELLY_MULT}x`);
 
-  // Initialize wallet
+  // Initialize wallet FIRST
   if (!initializeWallet()) {
     log('FATAL', 'Failed to initialize wallet - exiting');
     process.exit(1);
   }
 
+  // ✅ THEN create client with wallet
+  polyClient = new PolymarketClient(wallet);
+
   // Load state
   loadState();
+
+  // Authenticate
+  await polyClient.authenticate();
 
   // Start dashboard
   startDashboard();
