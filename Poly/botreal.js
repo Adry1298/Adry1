@@ -310,7 +310,7 @@ async function monitorAndTrade(bot) {
 // ====================================================================
 async function main() {
   console.log(`
-╔════════════════════════════════════════════════╗
+��════════════════════════════════════════════════╗
 ║  POLYMARKET TRADING BOT V2 - CLOB CLIENT V2    ║
 ║  Modalità: ${CONFIG.ENABLE_REAL_TRADES ? '🔴 REAL TRADING' : '🟢 SIMULATION'}
 ╚════════════════════════════════════════════════╝
@@ -318,7 +318,8 @@ async function main() {
 
   log('SYSTEM', 'Inizializzazione...');
 
-  const provider = new ethers.providers.JsonRpcProvider(CONFIG.POLYGON_RPC);
+  // ✅ ethers v6 syntax
+  const provider = new ethers.JsonRpcProvider(CONFIG.POLYGON_RPC);
   const wallet = new ethers.Wallet(CONFIG.PRIVATE_KEY, provider);
   log('SYSTEM', `✅ Wallet: ${wallet.address}`);
 
